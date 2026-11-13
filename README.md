@@ -24,8 +24,8 @@ manipulador_ros2_ws/
 Em qualquer computador ou no Raspberry Pi:
 
 ```bash
-git clone https://github.com/<seu-usuario>/manipulador_ros2_ws.git
-cd manipulador_ros2_ws
+git clone https://github.com/jpqm/manipulador_ros2.git
+cd manipulador_ros2
 ```
 
 ---
