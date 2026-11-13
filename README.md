@@ -84,7 +84,7 @@ O **Raspberry Pi OS** (Debian) não possui pacotes `.deb` oficiais do ROS 2 no `
 
 3. **Compile a imagem Docker no Raspberry Pi:**
    ```bash
-   cd manipulador_ros2_ws
+   cd manipulador_ros2
    docker compose build
    ```
    *(Na primeira vez no Pi 5 pode levar alguns minutos para baixar o ROS 2 Lyrical, dependências Python e compilar o workspace).*
