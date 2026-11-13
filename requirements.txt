@@ -1,0 +1,5 @@
+ultralytics
+roboticstoolbox-python
+pyserial
+opencv-python
+numpy

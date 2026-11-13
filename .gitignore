@@ -1,0 +1,21 @@
+# Workspace ROS 2 (colcon)
+build/
+install/
+log/
+
+# Python / venv
+__pycache__/
+*.py[cod]
+.venv/
+
+# Runtime / calibração local
+gcode_log.txt
+capturas/
+
+# Editores
+.vscode/
+
+COMPARATIVO_ARQUITETURAS_RASPBERRY.md
+DOCUMENTACAO_MIGRACAO_ROS2.md
+GUIA_PORTABILIDADE_GITHUB.md
+GUIA_UNITY_ROS2.md

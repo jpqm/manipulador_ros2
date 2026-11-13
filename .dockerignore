@@ -1,0 +1,10 @@
+.git/
+.venv/
+.vscode/
+build/
+install/
+log/
+capturas/
+gcode_log.txt
+**/__pycache__/
+*.py[cod]

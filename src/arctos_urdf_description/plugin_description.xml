@@ -1,0 +1,12 @@
+<library path="manipulador_rviz_panel">
+  <class name="arctos_urdf_description/ManipuladorPanel"
+         type="arctos_rviz::ManipuladorPanel"
+         base_class_type="rviz_common::Panel">
+    <description>Painel Inferior de Controle do Manipulador Arctos (GRBL + Bezier + YOLO).</description>
+  </class>
+  <class name="arctos_urdf_description/CameraPanel"
+         type="arctos_rviz::CameraPanel"
+         base_class_type="rviz_common::Panel">
+    <description>Painel Superior Direito da Câmera / YOLO do Manipulador Arctos.</description>
+  </class>
+</library>

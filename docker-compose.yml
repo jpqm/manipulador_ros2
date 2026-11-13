@@ -1,0 +1,35 @@
+x-common: &common
+  image: manipulador_ros2_ws:latest
+  build: .
+  network_mode: host
+  ipc: host
+  # Permite rodar em modo simulado mesmo sem câmera/Arduino conectados e cobre /dev/ttyUSB*
+  privileged: true
+  volumes:
+    - /dev:/dev
+
+services:
+  manipulador-headless:
+    <<: *common
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+    command: >
+      ros2 launch manipulador_control sistema.launch.py
+      use_gui:=false
+      camera_index:=${CAMERA_INDEX:-0}
+      serial_port:=${SERIAL_PORT:-/dev/ttyACM0}
+
+  manipulador-gui:
+    <<: *common
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /dev:/dev
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: >
+      ros2 launch manipulador_control sistema.launch.py
+      use_gui:=true
+      camera_index:=${CAMERA_INDEX:-0}
+      serial_port:=${SERIAL_PORT:-/dev/ttyACM0}
