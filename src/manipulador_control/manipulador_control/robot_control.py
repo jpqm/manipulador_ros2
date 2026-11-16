@@ -79,10 +79,14 @@ class RobotController:
         if self.on_angle_update:
             self.on_angle_update(*self.angulos_atuais, float(dur))
 
+    @staticmethod
+    def jaw_m_de_cmd(cmd):
+        """Converte um comando M97 de garra para a abertura das garras no URDF (m)."""
+        return 0.0 if "B0" not in cmd else 0.015
+
     def _emit_gripper(self, cmd):
         if self.on_gripper_update:
-            aberto = "B0" not in cmd
-            self.on_gripper_update(0.0 if aberto else 0.015)
+            self.on_gripper_update(self.jaw_m_de_cmd(cmd))
 
     def interpolar_abc(self, R_ini, P_ini, R_fim, P_fim, n=21, A=None, B=None, C=None):
         """Interpola linearmente os ângulos do pulso (A, B, C) entre a pose inicial e a final."""
@@ -166,15 +170,27 @@ class RobotController:
         })
 
     def obter_resumo_plano(self):
-        """Retorna todos os pontos 3D (mm, frame Craig), a lista completa de ângulos e o ângulo final planejado."""
+        """Retorna pontos 3D (mm, frame Craig), eventos (movimento/garra) e o ângulo final planejado."""
         pontos_mm = []
-        sequencia_angulos = []
+        eventos = []
+        angulo_final = None
         for item in self.plano_pendente:
             if item["tipo"] in ("trajetoria", "juntas"):
                 pontos_mm.extend(item["pontos_mm"])
-                sequencia_angulos.extend(item["angulos"])
-        angulo_final = sequencia_angulos[-1] if sequencia_angulos else None
-        return pontos_mm, sequencia_angulos, angulo_final
+                eventos.append({
+                    "tipo": "mov",
+                    "angulos": item["angulos"],
+                    "feedrate": item["feedrate"],
+                })
+                if item["angulos"]:
+                    angulo_final = item["angulos"][-1]
+            elif item["tipo"] == "garra":
+                eventos.append({
+                    "tipo": "garra",
+                    "jaw_m": self.jaw_m_de_cmd(item["cmd"]),
+                    "pausa": item["pausa"],
+                })
+        return pontos_mm, eventos, angulo_final
 
     def executar_plano(self):
         """Executa no GRBL (ou MockSerialGRBL) os passos planejados usando apenas o feedrate do G1."""

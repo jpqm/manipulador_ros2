@@ -10,7 +10,7 @@ sys.path.insert(0, str(_PKG_DIR))
 import cv2
 import numpy as np
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
@@ -27,6 +27,7 @@ from visualization_msgs.msg import (
     Marker,
 )
 
+from config import GRBL_SETTINGS
 import ik_craig as ik
 from robot_control import RobotController
 from serial_driver import SerialDriver
@@ -38,6 +39,8 @@ ANIM_TICK_S = 1.0 / ANIM_FPS
 POSE_BUSCA = (-110.0, 0.0, -20.0, 0.0, -105.0, 0.0)
 JOINT_NAMES = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'jaw1', 'jaw2']
 _T_CRAIG_TO_RVIZ = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+_MAX_RATES_DEG_S = np.array([GRBL_SETTINGS[110 + i] for i in range(6)], dtype=float) / 60.0
+_ACCEL_DEG_S2 = max(1.0, float(min(GRBL_SETTINGS[120 + i] for i in range(6))))
 
 
 def craig_deg_to_urdf_rad(theta1, theta2, theta3, A, B, C, jaw_m=0.0):
@@ -77,29 +80,105 @@ def quat_to_rot_matrix(qx, qy, qz, qw):
     ], dtype=float)
 
 
-def interpolar_angulos_30fps(seq_angulos, feedrate_deg_min=800.0, fps=ANIM_FPS):
-    """Subdivide a lista de ângulos em quadros a 30 FPS respeitando a velocidade do Feedrate F (graus/min)."""
-    validos = [tuple(float(v) for v in a) for a in seq_angulos if np.all(np.isfinite(a))]
-    if not validos:
-        return []
-    if len(validos) == 1:
-        return validos
+def _duracao_segmento(ini, fim, vel_deg_s):
+    """Estima o tempo do segmento respeitando F (norma 6D do GRBL) e $110..$115."""
+    delta = fim - ini
+    dist_6d = float(np.linalg.norm(delta))
+    dt = max(dist_6d / vel_deg_s, float(np.max(np.abs(delta) / _MAX_RATES_DEG_S)))
+    return dt, dist_6d
 
-    vel_deg_s = max(float(feedrate_deg_min), 10.0) / 60.0
-    passo_max_deg = vel_deg_s / fps
 
-    quadros = [validos[0]]
-    for i in range(len(validos) - 1):
-        ini = np.asarray(validos[i], dtype=float)
-        fim = np.asarray(validos[i + 1], dtype=float)
-        dist_deg = float(np.linalg.norm(fim - ini))
-        if not np.isfinite(dist_deg) or dist_deg < 1e-6:
-            continue
-        n_sub = max(1, int(np.ceil(dist_deg / passo_max_deg)))
-        for k in range(1, n_sub + 1):
-            interp = ini + (fim - ini) * (k / n_sub)
-            quadros.append(tuple(float(v) for v in interp))
-    return quadros
+def _indice_por_tempo(n_quadros, t0, t_agora, fps=ANIM_FPS):
+    return min(n_quadros - 1, max(0, int((t_agora - t0) * fps)))
+
+
+def interpolar_angulos_30fps(
+    seq_ou_eventos,
+    feedrate_deg_min=800.0,
+    fps=ANIM_FPS,
+    angulo_inicial=None,
+    jaw_inicial=0.0,
+):
+    """Reamostra movimentos e pausas de garra a 30 FPS pelo tempo real estimado do GRBL."""
+    if not seq_ou_eventos:
+        return [], []
+
+    if isinstance(seq_ou_eventos[0], dict):
+        eventos = seq_ou_eventos
+    else:
+        eventos = [{"tipo": "mov", "angulos": seq_ou_eventos, "feedrate": feedrate_deg_min}]
+
+    cur_jaw = float(jaw_inicial)
+    pts, jaws, t_cum = [], [], []
+
+    if angulo_inicial is not None and np.all(np.isfinite(angulo_inicial)):
+        pts.append(np.asarray(angulo_inicial, dtype=float))
+        jaws.append(cur_jaw)
+        t_cum.append(0.0)
+
+    for ev in eventos:
+        if ev["tipo"] == "mov":
+            vel_deg_s = max(float(ev.get("feedrate", feedrate_deg_min)), 10.0) / 60.0
+            t0_bloco = t_cum[-1] if t_cum else 0.0
+            idx_ini = len(t_cum)
+            dist_bloco = 0.0
+            for a in ev["angulos"]:
+                if not np.all(np.isfinite(a)):
+                    continue
+                fim = np.asarray(a, dtype=float)
+                if not pts:
+                    pts.append(fim)
+                    jaws.append(cur_jaw)
+                    t_cum.append(0.0)
+                    t0_bloco = 0.0
+                    idx_ini = 1
+                    continue
+                dt, dist_6d = _duracao_segmento(pts[-1], fim, vel_deg_s)
+                if not np.isfinite(dt) or dt <= 1e-9:
+                    continue
+                dist_bloco += dist_6d
+                pts.append(fim)
+                jaws.append(cur_jaw)
+                t_cum.append(t_cum[-1] + dt)
+            dt_bloco = (t_cum[-1] - t0_bloco) if len(t_cum) > idx_ini else 0.0
+            if dist_bloco > 1e-9 and dt_bloco > 1e-9:
+                v_bloco = dist_bloco / dt_bloco
+                if dist_bloco >= (v_bloco * v_bloco) / _ACCEL_DEG_S2:
+                    t_real = dt_bloco + v_bloco / _ACCEL_DEG_S2
+                else:
+                    t_real = 2.0 * float(np.sqrt(dist_bloco / _ACCEL_DEG_S2))
+                escala = t_real / dt_bloco
+                for k in range(idx_ini, len(t_cum)):
+                    t_cum[k] = t0_bloco + (t_cum[k] - t0_bloco) * escala
+        elif ev["tipo"] == "garra" and pts:
+            novo_jaw = float(ev["jaw_m"])
+            pausa = max(0.0, float(ev.get("pausa", 0.0)))
+            if pausa > 1e-9:
+                t_atuacao = min(0.2, pausa)  # acompanha T0.2 do M97
+                pts.append(pts[-1])
+                jaws.append(novo_jaw)
+                t_cum.append(t_cum[-1] + t_atuacao)
+                if pausa > t_atuacao + 1e-9:
+                    pts.append(pts[-1])
+                    jaws.append(novo_jaw)
+                    t_cum.append(t_cum[-1] + (pausa - t_atuacao))
+            cur_jaw = novo_jaw
+
+    if not pts:
+        return [], []
+    if len(pts) == 1:
+        return [tuple(float(v) for v in pts[0])], [float(jaws[0])]
+
+    t_total = t_cum[-1]
+    t_samples = np.arange(0.0, t_total, 1.0 / fps)
+    if t_samples.size == 0 or (t_total - t_samples[-1]) > 1e-6:
+        t_samples = np.append(t_samples, t_total)
+
+    pts_arr = np.vstack(pts)
+    cols = [np.interp(t_samples, t_cum, pts_arr[:, c]) for c in range(6)]
+    seq_ang = [tuple(float(cols[c][k]) for c in range(6)) for k in range(len(t_samples))]
+    seq_jaw = [float(v) for v in np.interp(t_samples, t_cum, np.asarray(jaws, dtype=float))]
+    return seq_ang, seq_jaw
 
 
 class ManipuladorROS2Node(Node):
@@ -110,6 +189,7 @@ class ManipuladorROS2Node(Node):
         self.camera_index = int(self.get_parameter('camera_index').value)
         serial_port = str(self.get_parameter('serial_port').value)
         self._cb_group = ReentrantCallbackGroup()
+        self._cam_group = MutuallyExclusiveCallbackGroup()
         self.em_movimento = threading.Event()
         self._lock = threading.Lock()
 
@@ -117,10 +197,15 @@ class ManipuladorROS2Node(Node):
         self._current_angles = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._current_jaw_m = 0.0
         self._real_seq = []
+        self._real_jaw_seq = []
         self._real_idx = 0
+        self._real_t0 = 0.0
         self._preview_angles = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self._preview_jaw_m = 0.0
         self._preview_seq = []
+        self._preview_jaw_seq = []
         self._preview_idx = 0
+        self._preview_t0 = 0.0
         self._cached_points_mm = []
 
         # 1. Publishers para o RViz2 e Painel Lateral (criados logo no início)
@@ -180,9 +265,9 @@ class ManipuladorROS2Node(Node):
         self.create_service(Trigger, '/calibrar', self.srv_calibrar, callback_group=self._cb_group)
 
         # 7. Timers de atualização do RViz2 (30 FPS) e Câmera
-        self.create_timer(ANIM_TICK_S, self._tick_joint_states)
-        self.create_timer(0.5, self._tick_republish_path)
-        self.create_timer(CAMERA_TICK_S, self._tick_camera)
+        self.create_timer(ANIM_TICK_S, self._tick_joint_states, callback_group=self._cb_group)
+        self.create_timer(0.5, self._tick_republish_path, callback_group=self._cb_group)
+        self.create_timer(CAMERA_TICK_S, self._tick_camera, callback_group=self._cam_group)
 
         self._emit_status("Pronto! Arraste o Gizmo 3D na ponta da garra ou use o painel lateral.")
 
@@ -379,54 +464,65 @@ class ManipuladorROS2Node(Node):
 
     def _on_controller_gripper(self, jaw_m):
         with self._lock:
-            self._current_jaw_m = float(jaw_m)
+            if not self._real_seq:
+                self._current_jaw_m = float(jaw_m)
+                if not self.controller.plano_pendente:
+                    self._preview_jaw_m = self._current_jaw_m
 
     def _tick_joint_states(self):
         now = self.get_clock().now().to_msg()
+        t_agora = time.monotonic()
         with self._lock:
             if self._real_seq:
+                self._real_idx = _indice_por_tempo(len(self._real_seq), self._real_t0, t_agora)
                 cur = self._real_seq[self._real_idx]
+                jaw_real = self._real_jaw_seq[self._real_idx]
                 self._current_angles = cur
-                if self._real_idx < len(self._real_seq) - 1:
-                    self._real_idx += 1
+                self._current_jaw_m = jaw_real
             else:
                 cur = self._current_angles
+                jaw_real = self._current_jaw_m
 
-            jaw = self._current_jaw_m
             if self._preview_seq:
+                self._preview_idx = _indice_por_tempo(len(self._preview_seq), self._preview_t0, t_agora)
                 prv = self._preview_seq[self._preview_idx]
-                if self._preview_idx < len(self._preview_seq) - 1:
-                    self._preview_idx += 1
+                jaw_prev = self._preview_jaw_seq[self._preview_idx]
             else:
                 prv = self._preview_angles
+                jaw_prev = self._preview_jaw_m
 
         msg_real = JointState()
         msg_real.header.stamp = now
         msg_real.name = JOINT_NAMES
-        msg_real.position = craig_deg_to_urdf_rad(*cur, jaw_m=jaw)
+        msg_real.position = craig_deg_to_urdf_rad(*cur, jaw_m=jaw_real)
         self.pub_joints.publish(msg_real)
 
         msg_prev = JointState()
         msg_prev.header.stamp = now
         msg_prev.name = JOINT_NAMES
-        msg_prev.position = craig_deg_to_urdf_rad(*prv, jaw_m=jaw)
+        msg_prev.position = craig_deg_to_urdf_rad(*prv, jaw_m=jaw_prev)
         self.pub_preview_joints.publish(msg_prev)
 
     def _atualizar_visualizacao_plano(self, atualizar_gizmo=True):
-        pontos_mm, seq_angulos, angulo_final = self.controller.obter_resumo_plano()
-        seq_30fps = interpolar_angulos_30fps(
-            [self._current_angles] + list(seq_angulos),
+        pontos_mm, eventos, angulo_final = self.controller.obter_resumo_plano()
+        with self._lock:
+            ang_ini = self._current_angles
+            jaw_ini = self._current_jaw_m
+        seq_30fps, jaws_30fps = interpolar_angulos_30fps(
+            eventos,
             feedrate_deg_min=self.controller.feedrate,
             fps=ANIM_FPS,
+            angulo_inicial=ang_ini,
+            jaw_inicial=jaw_ini,
         )
         with self._lock:
             self._cached_points_mm = list(pontos_mm)
             self._preview_seq = seq_30fps
+            self._preview_jaw_seq = jaws_30fps
             self._preview_idx = 0
-            if angulo_final is not None:
-                self._preview_angles = angulo_final
-            else:
-                self._preview_angles = self._current_angles
+            self._preview_t0 = time.monotonic()
+            self._preview_angles = angulo_final if angulo_final is not None else self._current_angles
+            self._preview_jaw_m = jaws_30fps[-1] if jaws_30fps else self._current_jaw_m
         self._publicar_path(self._cached_points_mm)
         if atualizar_gizmo and pontos_mm:
             self._sincronizar_gizmo_com_pose(pontos_mm[-1])
@@ -550,7 +646,9 @@ class ManipuladorROS2Node(Node):
         # Prepara a sequência interpolada a 30 FPS para o robô real no RViz2
         with self._lock:
             self._real_seq = list(self._preview_seq)
+            self._real_jaw_seq = list(self._preview_jaw_seq)
             self._real_idx = 0
+            self._real_t0 = time.monotonic()
 
         def _run():
             try:
@@ -562,10 +660,14 @@ class ManipuladorROS2Node(Node):
                         if not self._real_seq or self._real_idx >= len(self._real_seq) - 1:
                             if self._real_seq:
                                 self._current_angles = self._real_seq[-1]
+                                self._current_jaw_m = self._real_jaw_seq[-1]
                             self._real_seq = []
+                            self._real_jaw_seq = []
                             self._cached_points_mm = []
                             self._preview_seq = []
+                            self._preview_jaw_seq = []
                             self._preview_angles = self._current_angles
+                            self._preview_jaw_m = self._current_jaw_m
                             break
                     time.sleep(ANIM_TICK_S)
                 self._publicar_path([])
@@ -596,15 +698,22 @@ class ManipuladorROS2Node(Node):
         def _posicionar_e_detectar():
             try:
                 self._emit_status("Posicionando em POSE_BUSCA para detecção YOLO...")
-                seq_busca = interpolar_angulos_30fps(
-                    [self._current_angles, POSE_BUSCA],
+                with self._lock:
+                    ang_ini = self._current_angles
+                    jaw_ini = self._current_jaw_m
+                seq_busca, jaws_busca = interpolar_angulos_30fps(
+                    [ang_ini, POSE_BUSCA],
                     feedrate_deg_min=self.controller.feedrate,
                     fps=ANIM_FPS,
+                    jaw_inicial=jaw_ini,
                 )
                 with self._lock:
                     self._real_seq = seq_busca
+                    self._real_jaw_seq = jaws_busca
                     self._real_idx = 0
+                    self._real_t0 = time.monotonic()
                     self._preview_angles = POSE_BUSCA
+                    self._preview_jaw_m = jaw_ini
                 self.controller.enviar_juntas(*POSE_BUSCA)
                 self.serial.wait_idle()
                 while True:
@@ -612,6 +721,7 @@ class ManipuladorROS2Node(Node):
                         if not self._real_seq or self._real_idx >= len(self._real_seq) - 1:
                             self._current_angles = POSE_BUSCA
                             self._real_seq = []
+                            self._real_jaw_seq = []
                             break
                     time.sleep(ANIM_TICK_S)
 
@@ -661,19 +771,21 @@ class ManipuladorROS2Node(Node):
         return response
 
     def srv_abrir_garra(self, request, response):
-        self.serial.send("M97 B50 T0.2")
-        self._on_controller_gripper(0.0)
-        self._emit_status("Garra aberta (M97 B50 T0.2).")
+        cmd = "M97 B50 T0.2"
+        self.serial.send(cmd)
+        self._on_controller_gripper(RobotController.jaw_m_de_cmd(cmd))
+        self._emit_status(f"Garra aberta ({cmd}).")
         response.success = True
-        response.message = "Garra aberta (M97 B50 T0.2)."
+        response.message = f"Garra aberta ({cmd})."
         return response
 
     def srv_fechar_garra(self, request, response):
-        self.serial.send("M97 B0 T0.2")
-        self._on_controller_gripper(0.015)
-        self._emit_status("Garra fechada (M97 B0 T0.2).")
+        cmd = "M97 B0 T0.2"
+        self.serial.send(cmd)
+        self._on_controller_gripper(RobotController.jaw_m_de_cmd(cmd))
+        self._emit_status(f"Garra fechada ({cmd}).")
         response.success = True
-        response.message = "Garra fechada (M97 B0 T0.2)."
+        response.message = f"Garra fechada ({cmd})."
         return response
 
     def srv_calibrar(self, request, response):
