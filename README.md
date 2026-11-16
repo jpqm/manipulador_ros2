@@ -24,8 +24,8 @@ manipulador_ros2_ws/
 Em qualquer computador ou no Raspberry Pi:
 
 ```bash
-git clone https://github.com/<seu-usuario>/manipulador_ros2_ws.git
-cd manipulador_ros2_ws
+git clone https://github.com/jpqm/manipulador_ros2.git
+cd manipulador_ros2
 ```
 
 ---
@@ -84,7 +84,7 @@ O **Raspberry Pi OS** (Debian) não possui pacotes `.deb` oficiais do ROS 2 no `
 
 3. **Compile a imagem Docker no Raspberry Pi:**
    ```bash
-   cd manipulador_ros2_ws
+   cd manipulador_ros2
    docker compose build
    ```
    *(Na primeira vez no Pi 5 pode levar alguns minutos para baixar o ROS 2 Lyrical, dependências Python e compilar o workspace).*
