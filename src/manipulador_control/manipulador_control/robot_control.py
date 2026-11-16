@@ -65,6 +65,15 @@ class RobotController:
         self.Ri_planejado = self.Ri.copy()
         self.angulos_planejados = self.angulos_atuais
         self.modo_juntas_planejado = self.modo_juntas
+        self._grbl_b_invertido = False
+        self.serial.on_status = self._on_serial_status
+
+    def _on_serial_status(self, x, y, z, a, b, c):
+        """Converte a posição reportada pelo GRBL (WPos) para ângulos de Craig e notifica o nó ROS."""
+        c_craig = -float(b) if self._grbl_b_invertido else float(b)
+        self.angulos_atuais = (float(x), float(y), float(z), float(a), float(c), c_craig)
+        if self.on_angle_update:
+            self.on_angle_update(*self.angulos_atuais, 0.04, live=True)
 
     def limpar_plano(self):
         """Reinicia a fila de planejamento a partir do estado real atual do robô."""
@@ -200,6 +209,7 @@ class RobotController:
         for item in self.plano_pendente:
             tipo = item["tipo"]
             if tipo == "trajetoria":
+                self._grbl_b_invertido = True
                 angulos = item["angulos"]
                 tempos = item["tempos"]
                 feedrate = int(round(item["feedrate"]))
@@ -215,6 +225,7 @@ class RobotController:
                     time.sleep(pausa + 1.0)
 
             elif tipo == "juntas":
+                self._grbl_b_invertido = False
                 j1, j2, j3, j4, j5, j6 = item["juntas"]
                 feedrate = int(round(item["feedrate"]))
                 self.serial.send(f"G1 X{j1} Y{j2} Z{j3} A{j4} B{j6} C{j5} F{feedrate}")
@@ -234,6 +245,7 @@ class RobotController:
 
     def executar_movimento(self, x, y, z, A, B, C, feedrate=800):
         """Calcula os ângulos das juntas para cada ponto, envia ao GRBL (G1) e atualiza o ROS."""
+        self._grbl_b_invertido = True
         angulos = []
         for i in range(len(x)):
             theta1, theta2, theta3 = ik.calculo_angulos(x[i], y[i], z[i])
@@ -263,6 +275,7 @@ class RobotController:
     def enviar_juntas(self, j1, j2, j3, j4, j5, j6):
         """Envia um G1 direto com os 6 ângulos das juntas (valores GRBL) e atualiza o ROS."""
         self.modo_juntas = True
+        self._grbl_b_invertido = False
         self.serial.send(f"G1 X{j1} Y{j2} Z{j3} A{j4} B{j6} C{j5} F{int(self.feedrate)}")
         self._emit_angles(j1, j2, j3, j4, j5, j6, 0.5)
 

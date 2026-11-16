@@ -455,9 +455,16 @@ class ManipuladorROS2Node(Node):
 
     # --- PUBLICAÇÃO DE JUNTAS (INTERPOLADAS A 30 FPS) E TRAJETÓRIA BÉZIER NO RVIZ2 ---
 
-    def _on_controller_angles(self, theta1, theta2, theta3, A, B, C, dur=0.02):
+    def _on_controller_angles(self, theta1, theta2, theta3, A, B, C, dur=0.02, live=False):
         with self._lock:
-            if not self._real_seq:
+            if live:
+                self._real_seq = []
+                self._real_jaw_seq = []
+                self._current_angles = (theta1, theta2, theta3, A, B, C)
+                if not self.controller.plano_pendente:
+                    self._preview_angles = self._current_angles
+                return
+            if not self._real_seq and not self.em_movimento.is_set():
                 self._current_angles = (theta1, theta2, theta3, A, B, C)
                 if not self.controller.plano_pendente:
                     self._preview_angles = self._current_angles
@@ -718,7 +725,9 @@ class ManipuladorROS2Node(Node):
                 self.serial.wait_idle()
                 while True:
                     with self._lock:
-                        if not self._real_seq or self._real_idx >= len(self._real_seq) - 1:
+                        if not self._real_seq:
+                            break
+                        if self._real_idx >= len(self._real_seq) - 1:
                             self._current_angles = POSE_BUSCA
                             self._real_seq = []
                             self._real_jaw_seq = []

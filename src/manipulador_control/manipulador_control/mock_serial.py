@@ -29,12 +29,13 @@ class MockSerialGRBL:
     def write(self, data):
         """Interpreta o comando recebido: simula movimento (G1/G0), garra (M97) ou confirma com 'ok'."""
         cmd = data.decode().strip()
-        print(f"[MOCK] >> {cmd}")
+        if cmd != '?':
+            print(f"[MOCK] >> {cmd}")
 
         with self._lock:
             if cmd == '?':
-                mpos = ",".join(f"{v:.3f}" for v in self._pos[:3])
-                self._buffer.append(f"<Idle|MPos:{mpos}|FS:0,0>")
+                wpos = ",".join(f"{v:.3f}" for v in self._pos)
+                self._buffer.append(f"<Idle|WPos:{wpos}|FS:0,0>")
                 return
 
             if cmd.startswith(('G1', 'G0')):
