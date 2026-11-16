@@ -36,6 +36,7 @@ from yolo_detector import YOLODetector
 CAMERA_TICK_S = 0.03      # 30 ms (~33 FPS), igual ao CAMERA_TICK_MS = 30 do gui.py
 ANIM_FPS = 30.0           # 30 quadros/s para interpolação suave no RViz2
 ANIM_TICK_S = 1.0 / ANIM_FPS
+PREVIEW_VEL_MULT = 3.0    # Prévia (sombra) 3x mais rápida que o robô real
 POSE_BUSCA = (-110.0, 0.0, -20.0, 0.0, -105.0, 0.0)
 JOINT_NAMES = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'jaw1', 'jaw2']
 _T_CRAIG_TO_RVIZ = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
@@ -491,7 +492,9 @@ class ManipuladorROS2Node(Node):
                 jaw_real = self._current_jaw_m
 
             if self._preview_seq:
-                self._preview_idx = _indice_por_tempo(len(self._preview_seq), self._preview_t0, t_agora)
+                self._preview_idx = _indice_por_tempo(
+                    len(self._preview_seq), self._preview_t0, t_agora, fps=ANIM_FPS * PREVIEW_VEL_MULT
+                )
                 prv = self._preview_seq[self._preview_idx]
                 jaw_prev = self._preview_jaw_seq[self._preview_idx]
             else:
